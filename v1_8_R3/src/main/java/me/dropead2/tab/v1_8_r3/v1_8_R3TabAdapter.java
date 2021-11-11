@@ -31,7 +31,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-public class v1_8_R3TabAdapter extends TabAdapter {
+public class v1_8_R1TabAdapter extends TabAdapter {
 
     private final Map<Player, GameProfile[]> profiles = new HashMap<>();
     private final List<Player> initialized = new ArrayList<>();
@@ -42,7 +42,7 @@ public class v1_8_R3TabAdapter extends TabAdapter {
      * @param player the player
      * @param packet the packet to send
      */
-    private void sendPacket(Player player, Packet<?> packet) {
+    private void sendPacket(Player player, Packet packet) {
         ((CraftPlayer) player).getHandle().playerConnection.sendPacket(packet);
     }
 
@@ -81,15 +81,15 @@ public class v1_8_R3TabAdapter extends TabAdapter {
     @Override
     public TabAdapter sendHeaderFooter(Player player, String header, String footer) {
         if (this.getMaxElements(player) > 60 && (header != null || footer != null)) {
-            final Packet<?> packet = new PacketPlayOutPlayerListHeaderFooter(
-                    IChatBaseComponent.ChatSerializer.a("{\"text\":\"" + header + "\"}")
+            final Packet packet = new PacketPlayOutPlayerListHeaderFooter(
+                    ChatSerializer.a("{\"text\":\"" + header + "\"}")
             );
 
             try {
                 final Field footerField = packet.getClass().getDeclaredField("b");
 
                 footerField.setAccessible(true);
-                footerField.set(packet, IChatBaseComponent.ChatSerializer.a("{\"text\":\"" + footer + "\"}"));
+                footerField.set(packet, ChatSerializer.a("{\"text\":\"" + footer + "\"}"));
             } catch (IllegalAccessException | NoSuchFieldException e) {
                 e.printStackTrace();
             }
@@ -122,7 +122,7 @@ public class v1_8_R3TabAdapter extends TabAdapter {
             profile.getProperties().remove("textures", property);
             profile.getProperties().put("textures", new Property("textures", skinData[0], skinData[1]));
 
-            this.sendInfoPacket(player, PacketPlayOutPlayerInfo.EnumPlayerInfoAction.ADD_PLAYER, entityPlayer);
+            this.sendInfoPacket(player, EnumPlayerInfoAction.ADD_PLAYER, entityPlayer);
         }
     }
 
@@ -159,10 +159,10 @@ public class v1_8_R3TabAdapter extends TabAdapter {
 
         if (this.getMaxElements(player) == 80) {
             entityPlayer.listName = new ChatComponentText(text);
-            this.sendInfoPacket(player, PacketPlayOutPlayerInfo.EnumPlayerInfoAction.UPDATE_DISPLAY_NAME, entityPlayer);
+            this.sendInfoPacket(player, EnumPlayerInfoAction.UPDATE_DISPLAY_NAME, entityPlayer);
         }
 
-        this.sendInfoPacket(player, PacketPlayOutPlayerInfo.EnumPlayerInfoAction.UPDATE_LATENCY, entityPlayer);
+        this.sendInfoPacket(player, EnumPlayerInfoAction.UPDATE_LATENCY, entityPlayer);
 
         return this;
     }
@@ -180,7 +180,7 @@ public class v1_8_R3TabAdapter extends TabAdapter {
                 final GameProfile profile = this.profiles.get(player)[i];
                 final EntityPlayer entityPlayer = this.getEntityPlayer(profile);
 
-                this.sendInfoPacket(player, PacketPlayOutPlayerInfo.EnumPlayerInfoAction.ADD_PLAYER, entityPlayer);
+                this.sendInfoPacket(player, EnumPlayerInfoAction.ADD_PLAYER, entityPlayer);
             }
 
             this.initialized.add(player);
@@ -226,7 +226,7 @@ public class v1_8_R3TabAdapter extends TabAdapter {
      */
     @Override
     public TabAdapter hidePlayer(Player player, Player target) {
-        this.sendInfoPacket(player, PacketPlayOutPlayerInfo.EnumPlayerInfoAction.REMOVE_PLAYER, target);
+        this.sendInfoPacket(player, EnumPlayerInfoAction.REMOVE_PLAYER, target);
 
         return this;
     }
@@ -240,47 +240,64 @@ public class v1_8_R3TabAdapter extends TabAdapter {
     @Override
     public TabAdapter showRealPlayers(Player player) {
         if (!this.initialized.contains(player)) {
-            final ChannelPipeline pipeline = this.getPlayerConnection(player).networkManager.channel.pipeline();
+            final PlayerConnection connection = this.getPlayerConnection(player);
+            final NetworkManager networkManager = connection.networkManager;
 
-            pipeline.addBefore(
-                    "packet_handler",
-                    player.getName(),
-                    this.createShowListener(player)
-            );
+            try {
+                final Field outgoingQueueField = networkManager.getClass().getDeclaredField("k");
+                outgoingQueueField.setAccessible(true);
+
+                ((Queue<?>) outgoingQueueField.get(networkManager)).removeIf(object -> {
+                    if (object != null) {
+                        if (object instanceof PacketPlayOutNamedEntitySpawn) {
+                            this.handlePacketPlayOutNamedEntitySpawn(player, (PacketPlayOutNamedEntitySpawn) object);
+                            return true;
+                        } else if (object instanceof PacketPlayOutRespawn) {
+                            this.handlePacketPlayOutRespawn(player);
+                            return true;
+                        }
+                    }
+
+                    return false;
+                });
+            } catch (NoSuchFieldException | IllegalAccessException e) {
+                e.printStackTrace();
+            }
         }
 
         return this;
     }
 
     /**
-     * Create the listener required to show the players
+     * Handle an {@link PacketPlayOutNamedEntitySpawn} packet
      *
-     * @param player the player to create it for
-     * @return the handler
+     * @param player the player to handle it for
+     * @param packet the packet to handle
      */
-    private ChannelDuplexHandler createShowListener(Player player) {
-        return new ChannelDuplexHandler() {
-            @Override
-            public void write(ChannelHandlerContext context, Object packet, ChannelPromise promise) throws Exception {
-                if (packet instanceof PacketPlayOutNamedEntitySpawn) {
-                    final PacketPlayOutNamedEntitySpawn entitySpawn = (PacketPlayOutNamedEntitySpawn) packet;
-                    final Field uuidField = entitySpawn.getClass().getDeclaredField("b");
+    private void handlePacketPlayOutNamedEntitySpawn(Player player, PacketPlayOutNamedEntitySpawn packet) {
+        try {
+            final Field gameProfileField = packet.getClass().getDeclaredField("b");
+            gameProfileField.setAccessible(true);
 
-                    uuidField.setAccessible(true);
+            final Player target = Bukkit.getPlayer(((GameProfile) gameProfileField.get(packet)).getId());
 
-                    final Player target = Bukkit.getPlayer((UUID) uuidField.get(entitySpawn));
-
-                    if (target != null) {
-                        showPlayer(player, target);
-                    }
-                } else if (packet instanceof PacketPlayOutRespawn) {
-                    showPlayer(player, player);
-                }
-
-                super.write(context, packet, promise);
+            if (target != null) {
+                this.showPlayer(player, target);
             }
-        };
+        } catch (NoSuchFieldException | IllegalAccessException e) {
+            e.printStackTrace();
+        }
     }
+
+    /**
+     * Handle an {@link PacketPlayOutRespawn} packet
+     *
+     * @param player the player to handle it for
+     */
+    private void handlePacketPlayOutRespawn(Player player) {
+        this.showPlayer(player, player);
+    }
+
 
     /**
      * Show a real player to a player
@@ -291,7 +308,7 @@ public class v1_8_R3TabAdapter extends TabAdapter {
      */
     @Override
     public TabAdapter showPlayer(Player player, Player target) {
-        this.sendInfoPacket(player, PacketPlayOutPlayerInfo.EnumPlayerInfoAction.ADD_PLAYER, target);
+        this.sendInfoPacket(player, EnumPlayerInfoAction.ADD_PLAYER, target);
 
         return this;
     }
@@ -313,7 +330,7 @@ public class v1_8_R3TabAdapter extends TabAdapter {
      * @param action the action
      * @param target the target
      */
-    private void sendInfoPacket(Player player, PacketPlayOutPlayerInfo.EnumPlayerInfoAction action, EntityPlayer target) {
+    private void sendInfoPacket(Player player, EnumPlayerInfoAction action, EntityPlayer target) {
         this.sendPacket(player, new PacketPlayOutPlayerInfo(action, target));
     }
 
@@ -324,7 +341,7 @@ public class v1_8_R3TabAdapter extends TabAdapter {
      * @param action the action
      * @param target the target
      */
-    private void sendInfoPacket(Player player, PacketPlayOutPlayerInfo.EnumPlayerInfoAction action, Player target) {
+    private void sendInfoPacket(Player player, EnumPlayerInfoAction action, Player target) {
         this.sendInfoPacket(player, action, ((CraftPlayer) target).getHandle());
     }
 
